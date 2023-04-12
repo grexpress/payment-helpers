@@ -1,1 +1,1 @@
-# paypal-buttons
+# Grexpres payment helpers
