@@ -208,7 +208,9 @@ let paypalParams = {
     "enable-funding": urlParams['enable-funding'],
 }
 
-window.paypalLoadScript(paypalParams).then((paypal) => {
+document.addEventListener("DOMContentLoaded", () => {
+  window.paypalLoadScript(paypalParams).then((paypal) => {
     renderButtons()
     postMessageToParentWindow('gr-onPaypalResize', { data: { height: jQuery('#paypal-button-container').height() } })
+  });
 });
