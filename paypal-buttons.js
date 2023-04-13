@@ -1,4 +1,4 @@
-function renderPaypalButtons() {
+function renderXPaypalButtons() {
     window.XPayPalGateway = {
         error: {
             generic: 'We cannot process your PayPal payment now, please try again with another method.'
@@ -201,21 +201,28 @@ function renderPaypalButtons() {
     let paramsJson = '{"' + decodeURI(window.location.search.slice(1).replace(/&/g, "\",\"").replace(/=/g, "\":\"")) + '"}'
     let urlParams = paramsJson == '{""}' ? {} : JSON.parse(paramsJson)
     let paypalParams = {
+        "client-id": urlParams['client-id'],
         "vault": urlParams['vault'] || 'true',
         "commit": urlParams['commit'] || 'false',
         "components": urlParams['components'],
         "intent": urlParams['intent'] || 'capture',
-        "client-id": urlParams['client-id'],
         "enable-funding": urlParams['enable-funding'],
     }
 
-    window.paypalLoadScript(paypalParams).then((paypal) => {
-      renderButtons()
-      postMessageToParentWindow('gr-onPaypalResize', { data: { height: jQuery('#paypal-button-container').height() } })
+    let query = Object.entries(paypalParams)
+        .filter(entry => entry[1] != undefined)
+        .map(([key, value]) => `${key}=${value}`).join('&')
+    let paypalUrl = 'https://www.paypal.com/sdk/js?' + query
+    
+    loadjs(paypalUrl, function () {
+        renderButtons()
+        postMessageToParentWindow('gr-onPaypalResize', { data: { height: jQuery('#paypal-button-container').height() } })
     });
+
+    // window.paypalLoadScript(paypalParams).then((paypal) => {
+    //   renderButtons()
+    //   postMessageToParentWindow('gr-onPaypalResize', { data: { height: jQuery('#paypal-button-container').height() } })
+    // });
 }
 
-
-document.addEventListener("DOMContentLoaded", () => {
-  renderPaypalButtons()
-});
+jQuery(document).ready(() => renderXPaypalButtons())
