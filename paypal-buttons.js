@@ -1,15 +1,41 @@
-function renderXPaypalButtons() {
-    window.XPayPalGateway = {
+function renderXPaypalButtons($ = jQuery) {
+    XPayPalGateway = {
+        debug: true,
         error: {
-            generic: 'We cannot process your PayPal payment now, please try again with another method.'
+            generic: 'We cannot process your payment now, please try again with another method.'
+        }
+    }
+
+    function toggle(time = 5000) {
+        if(XPayPalGateway.debug) {
+            return new Promise((resolve) => {
+                setTimeout(() => resolve(), time)
+            })
+        } else {
+            return new Promise(resolve => resolve())
+        }
+    }
+
+    function toggleLoader(visible, data = {}, message = "") {
+        if(!visible || data.paymentSource != 'paypal') {
+            $('#xpaypal-full-screen-loader').css('display', visible ? 'flex' : 'none')
+            $('#xpaypal-full-screen-message').text(message)
+        }
+        return toggle()
+    }
+
+    function toggleFullScreenLoader(visible, data) {
+        if(!visible || data.paymentSource != 'paypal') {
+            return sendMessageToParentWindow('gr-onPaypalMessageVisibility', { data: { visible, ...data }})
+        } else {
+            return toggle()
         }
     }
 
     function renderButtons() {
         let orderData = {}
         let wooCheckoutFormInfo = {}
-        let wooOrder = null;
-
+        
         paypal.Buttons({
             onInit: function (data, actions) { },
             onClick: function (data, actions) {
@@ -74,46 +100,52 @@ function renderXPaypalButtons() {
                     purchase_units,
                     application_context
                 };
-
-                return actions.order.create(orderData)
-                    .then(orderID => sendMessageToParentWindow('gr-onPaypalOrderCreated', { data: { orderID } }))
-                    .then((result) => {
-                        wooOrder = result
-                        return result.orderID
-                    })
+                
+                return toggleLoader(true, data).then(() => actions.order.create(orderData)).finally(() => { toggleLoader(false) });
             },
             onApprove: function (data, actions) {
                 //console.log('onApprove', data)
-                const orderId = wooOrder.order_id;
-                if(orderId) {
-                    return actions.order.capture()
-                        .then(function (details) {
-                            return postMessageToParentWindow('gr-onPaypalOrderCompleted', { data: { ...details, order_id: orderId } })
-                        })
-                        .catch(e => {
-                            return postMessageToParentWindow('gr-onPaypalOrderCancel', { data: { ...details, order_id: orderId } })
-                        });
-                } else {
-                    postMessageToParentWindow('gr-onPaypalOrderError', { error: XPayPalGateway.error.generic });
-                }
+                const paypalOrderId = data.orderID || data.id;
+                let createdOrder = {}
+                return toggleFullScreenLoader(true, data)
+                    .then(() => sendMessageToParentWindow('gr-onPaypalOrderCreated', { data: { orderID: paypalOrderId } }))
+                    .then((result) => {
+                        createdOrder = result
+                        if(result.order_id) {
+                            return actions.order.capture()
+                        } else {
+                            throw new Error('Create order failed')
+                        }
+                    })
+                    .then((capturedOrder) => sendMessageToParentWindow('gr-onPaypalOrderCompleted', { data: { ...capturedOrder, order_id: createdOrder.order_id } }))
+                    .finally(() => { toggleFullScreenLoader(false, data) });
             },
             onCancel: function (data) {
-                postMessageToParentWindow('gr-onPaypalOrderCancel', { data });
+                try {
+                    postMessageToParentWindow('gr-onPaypalOrderCancel', { data });
+                } finally {
+                    toggleFullScreenLoader(false)
+                }
             },
             onError: function (error) {
-                //console.error('On Paypal Error', error)
-                let errMsg = null
-                if (error.message) {
-                    let jsonErrorText = error.message.match(/{(.*)}$/gm)
-                    let jsonError = JSON.parse(jsonErrorText)
-                    if (jsonError && jsonError.name && jsonError.message) {
-                        errMsg = `[${jsonError.name}] ${jsonError.message}`
+                try {
+                    // console.error('On Paypal Error', error)
+                    let errMsg = null
+                    if (error.message) {
+                        let jsonErrorText = error.message.match(/{(.*)}$/gm)
+                        let jsonError = JSON.parse(jsonErrorText)
+                        if (jsonError && jsonError.name && jsonError.message) {
+                            errMsg = `[${jsonError.name}] ${jsonError.message}`
+                        }
                     }
+    
+                    if(!errMsg || (errMsg && !errMsg.includes('popup close'))) {
+                        postMessageToParentWindow('gr-onPaypalOrderError', { error: errMsg || XPayPalGateway.error.generic });
+                    }
+                } finally {
+                    toggleFullScreenLoader(false)
                 }
-
-                if(errMsg && !errMsg.includes('popup close')) {
-                    postMessageToParentWindow('gr-onPaypalOrderError', { error: errMsg || XPayPalGateway.error.generic });
-                }
+                
             }
         }).render('#paypal-button-container');
     }
@@ -151,7 +183,7 @@ function renderXPaypalButtons() {
         registerObserver()
     }
 
-    function handleOverlayShow(node) {
+    function handleOverlayShow() {
         let iframe = document.querySelector('iframe[name*="_paypal-overlay-uid_"]')
         if (iframe && iframe.contentDocument) {
             jQuery(iframe).css('border', 'none')
@@ -160,9 +192,10 @@ function renderXPaypalButtons() {
         }
     }
 
-    function handleOverlayHide(node) {
-        jQuery('#paypal-button-container').css('display', '')
-        postMessageToParentWindow("gr-onPaypalHideOverlay")
+    function handleOverlayHide() {
+        sendMessageToParentWindow("gr-onPaypalHideOverlay").finally(() => {
+            jQuery('#paypal-button-container').css('display', '')
+        })
     }
 
     function postMessageToParentWindow(key, { data, error } = {}) {
@@ -225,4 +258,4 @@ function renderXPaypalButtons() {
     // });
 }
 
-jQuery(document).ready(() => renderXPaypalButtons())
+jQuery(document).ready(() => renderXPaypalButtons(jQuery))
