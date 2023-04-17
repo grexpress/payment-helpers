@@ -1,6 +1,9 @@
 function renderXPaypalButtons($ = jQuery) {
+    let paramsJson = '{"' + decodeURI(window.location.search.slice(1).replace(/&/g, "\",\"").replace(/=/g, "\":\"")) + '"}'
+    let urlParams = paramsJson == '{""}' ? {} : JSON.parse(paramsJson)
+
     XPayPalGateway = {
-        debug: true,
+        debug: true,//urlParams['debug'] == "true",
         error: {
             generic: 'We cannot process your payment now, please try again with another method.'
         }
@@ -39,8 +42,10 @@ function renderXPaypalButtons($ = jQuery) {
         paypal.Buttons({
             onInit: function (data, actions) { },
             onClick: function (data, actions) {
+                XPayPalGateway.debug && console.log('onClick', data)
                 return sendMessageToParentWindow('gr-onPaypalButtonClick', { data })
                     .then(result => {
+                        XPayPalGateway.debug && console.log('onClick Data', result)
                         wooCheckoutFormInfo = result
                         return result
                     })
@@ -49,7 +54,7 @@ function renderXPaypalButtons($ = jQuery) {
                     })
             },
             createOrder: function (data, actions) {
-                // console.log('createOrder', data, wooCheckoutFormInfo)
+                XPayPalGateway.debug && console.log('createOrder', data, wooCheckoutFormInfo)
                 let { shipping, purchase_units, intent = 'capture', billing } = wooCheckoutFormInfo || {}
                 purchase_units = purchase_units.map(unit => ({
                     ...unit,
@@ -104,11 +109,12 @@ function renderXPaypalButtons($ = jQuery) {
                 return toggleLoader(true, data).then(() => actions.order.create(orderData)).finally(() => { toggleLoader(false) });
             },
             onApprove: function (data, actions) {
-                //console.log('onApprove', data)
+                XPayPalGateway.debug && console.log('onApprove', data)
                 const paypalOrderId = data.orderID || data.id;
+                const signature = wooCheckoutFormInfo.signature
                 let createdOrder = {}
                 return toggleFullScreenLoader(true, data)
-                    .then(() => sendMessageToParentWindow('gr-onPaypalOrderCreated', { data: { orderID: paypalOrderId } }))
+                    .then(() => sendMessageToParentWindow('gr-onPaypalOrderCreated', { data: { orderID: paypalOrderId, signature } }))
                     .then((result) => {
                         createdOrder = result
                         if(result.order_id) {
@@ -117,28 +123,38 @@ function renderXPaypalButtons($ = jQuery) {
                             throw new Error('Create order failed')
                         }
                     })
-                    .then((capturedOrder) => sendMessageToParentWindow('gr-onPaypalOrderCompleted', { data: { ...capturedOrder, order_id: createdOrder.order_id } }))
-                    .finally(() => { toggleFullScreenLoader(false, data) });
+                    .then((capturedOrder) => sendMessageToParentWindow('gr-onPaypalOrderCompleted', { data: { ...capturedOrder, order_id: createdOrder.order_id, signature } }))
+                    .finally(() => { toggleFullScreenLoader(false) });
             },
             onCancel: function (data) {
                 try {
                     postMessageToParentWindow('gr-onPaypalOrderCancel', { data });
                 } finally {
-                    toggleFullScreenLoader(false)
+                    toggleFullScreenLoader(false, data)
                 }
             },
             onError: function (error) {
                 try {
-                    // console.error('On Paypal Error', error)
+                    XPayPalGateway.debug && console.log('On Paypal Error', error)
                     let errMsg = null
-                    if (error.message) {
-                        let jsonErrorText = error.message.match(/{(.*)}$/gm)
-                        let jsonError = JSON.parse(jsonErrorText)
-                        if (jsonError && jsonError.name && jsonError.message) {
-                            errMsg = `[${jsonError.name}] ${jsonError.message}`
+
+                    let errorText = typeof error == 'string' ? error : error.message
+                    if (errorText) {
+                        try {
+                            let jsonErrorText = errorText.match(/{(.*)}$/gm)
+                            let jsonError = JSON.parse(jsonErrorText)
+
+                            if(jsonError && jsonError.type == 'gr-event' && jsonError.handled) {
+                                return
+                            }
+                            if (jsonError && jsonError.name && jsonError.message) {
+                                errMsg = `[${jsonError.name}] ${jsonError.message}`
+                            }
+                        } catch (error) {
+                           console.error('Unknown error: ', error)
                         }
                     }
-    
+
                     if(!errMsg || (errMsg && !errMsg.includes('popup close'))) {
                         postMessageToParentWindow('gr-onPaypalOrderError', { error: errMsg || XPayPalGateway.error.generic });
                     }
@@ -199,15 +215,20 @@ function renderXPaypalButtons($ = jQuery) {
     }
 
     function postMessageToParentWindow(key, { data, error } = {}) {
+        //XPayPalGateway.debug && console.log(`Post message ${key} data=${JSON.stringify(data)} error=${error}`)
         let postData = { type: 'gr-event', key, data, error }
         window.parent.postMessage(postData, "*");
     }
 
     function sendMessageToParentWindow(key, { data, error } = {}) {
+        //XPayPalGateway.debug && console.log(`Send message ${key} data=${JSON.stringify(data)} error=${error}`)
+
         return new Promise((res, rej) => {
             let timeoutSchedule
             const channel = new MessageChannel();
             channel.port1.onmessage = ({ data }) => {
+                //XPayPalGateway.debug && console.log(`on message ${JSON.stringify(data)}`)
+
                 channel.port1.close();
                 timeoutSchedule && clearTimeout(timeoutSchedule)
 
@@ -218,6 +239,7 @@ function renderXPaypalButtons($ = jQuery) {
                 }
             };
             channel.port1.onmessageerror = (e) => {
+                //XPayPalGateway.debug && console.log(`on error ${JSON.stringify(data)}`)
                 channel.port1.close();
                 timeoutSchedule && clearTimeout(timeoutSchedule)
             }
@@ -225,14 +247,12 @@ function renderXPaypalButtons($ = jQuery) {
             timeoutSchedule = setTimeout(() => {
                 channel.port1.close();
                 rej('Timeout');
-            }, 10000)
+            }, 30000)
 
             window.parent.postMessage({ type: 'gr-event', key, data, error }, "*", [channel.port2]);
         });
     }
 
-    let paramsJson = '{"' + decodeURI(window.location.search.slice(1).replace(/&/g, "\",\"").replace(/=/g, "\":\"")) + '"}'
-    let urlParams = paramsJson == '{""}' ? {} : JSON.parse(paramsJson)
     let paypalParams = {
         "client-id": urlParams['client-id'],
         "vault": urlParams['vault'] || 'true',
